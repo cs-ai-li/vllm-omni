@@ -1,0 +1,1 @@
+# Core: Define the generation pipeline
