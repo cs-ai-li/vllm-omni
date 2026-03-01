@@ -95,6 +95,11 @@ _DIFFUSION_MODELS = {
         "pipeline_flux",
         "FluxPipeline",
     ),
+    "Mova720PPipeline": (
+        "mova_720p",
+        "pipeline_mova_720p",
+        "Mova720PPipeline",
+    ),
 }
 
 
@@ -233,6 +238,7 @@ _DIFFUSION_POST_PROCESS_FUNCS = {
     "StableDiffusion3Pipeline": "get_sd3_image_post_process_func",
     "Flux2KleinPipeline": "get_flux2_klein_post_process_func",
     "FluxPipeline": "get_flux_post_process_func",
+    "Mova720PPipeline": "get_mova_720p_post_process_func",
 }
 
 _DIFFUSION_PRE_PROCESS_FUNCS = {

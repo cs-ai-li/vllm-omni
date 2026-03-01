@@ -1,1 +1,0 @@
-# Core: Rewriting MOVA's Heterogeneous Dual Towers DiT
