@@ -98,9 +98,23 @@ class Mova720PPipeline(nn.Module):
             )
         ]
 
-        # VAE and latent settings
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-        self.default_sample_size = 64
+        self.vae_scale_factor_spatial = 8
+        self.vae_scale_factor_temporal = 4
+        
+        self._guidance_scale = None
+        self._current_timestep = None
+
+    @property
+    def guidance_scale(self):
+        return self._guidance_scale
+
+    @property
+    def do_classifier_free_guidance(self):
+        return self._guidance_scale is not None and self._guidance_scale > 1.0
+
+    @property
+    def current_timestep(self):
+        return self._current_timestep
 
     def _get_t5_prompt_embeds(
         self,
@@ -148,13 +162,9 @@ class Mova720PPipeline(nn.Module):
         dtype: torch.dtype,
         device: torch.device,
     ) -> torch.Tensor:
-        # MOVA 720p 默认 VAE 缩放
-        vae_spatial_factor = 8
-        vae_temporal_factor = 4
-        
-        num_latent_frames = (num_frames - 1) // vae_temporal_factor + 1
-        latent_height = height // vae_spatial_factor
-        latent_width = width // vae_spatial_factor
+        num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+        latent_height = height // self.vae_scale_factor_spatial
+        latent_width = width // self.vae_scale_factor_spatial
 
         shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
         latents = torch.randn(shape, device=device, dtype=dtype)
@@ -178,15 +188,14 @@ class Mova720PPipeline(nn.Module):
 
         sampling_params = req.sampling_params
         num_inference_steps = sampling_params.num_inference_steps or 50
-        guidance_scale = sampling_params.guidance_scale or 5.0
-        # MOVA 720p 默认尺寸: 720x1280
+        self._guidance_scale = sampling_params.guidance_scale or 5.0
         height = sampling_params.height or 720
         width = sampling_params.width or 1280
-        num_frames = getattr(sampling_params, "num_frames", 1)
+        num_frames = getattr(sampling_params, "num_frames", 81) # Default to some frames for video
 
         # 2. 准备 Latents
         batch_size = len(prompt)
-        num_channels_latents = self.transformer.in_channels
+        num_channels_latents = self.transformer.config.in_channels if hasattr(self.transformer, "config") else 16
         latents = self.prepare_latents(
             batch_size,
             num_channels_latents,
@@ -199,7 +208,7 @@ class Mova720PPipeline(nn.Module):
 
         # 3. 准备 Text Embeddings (支持 CFG)
         prompt_embeds = self._get_t5_prompt_embeds(prompt)
-        if guidance_scale > 1.0:
+        if self.do_classifier_free_guidance:
             negative_prompt_embeds = self._get_t5_prompt_embeds([""] * batch_size)
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
@@ -208,11 +217,12 @@ class Mova720PPipeline(nn.Module):
         timesteps = self.scheduler.timesteps
 
         for i, t in enumerate(tqdm(timesteps)):
+            self._current_timestep = t
             # 扩展 latent 以适应 CFG
-            latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
+            latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
             
             # 计算时间步嵌入
-            t_emb = sinusoidal_embedding_1d(self.transformer.freq_dim, t.expand(latent_model_input.shape[0]))
+            t_emb = sinusoidal_embedding_1d(self.transformer.config.freq_dim, t.expand(latent_model_input.shape[0]))
             t_emb = t_emb.to(device=self.device, dtype=torch.bfloat16)
 
             # Transformer 推理
@@ -224,18 +234,21 @@ class Mova720PPipeline(nn.Module):
             )
 
             # CFG 引导
-            if guidance_scale > 1.0:
+            if self.do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                noise_pred = noise_pred_uncond + self._guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # Scheduler 步进
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
+        self._current_timestep = None
+
         # 5. VAE 解码
         latents = latents / self.vae.config.scaling_factor
-        image = self.vae.decode(latents).sample
+        latents = latents.to(self.vae.dtype)
+        video = self.vae.decode(latents, return_dict=False)[0]
 
-        return DiffusionOutput(output=image)
+        return DiffusionOutput(output=video)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
