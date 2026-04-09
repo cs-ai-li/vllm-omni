@@ -13,6 +13,7 @@ from transformers.models.qwen2.modeling_qwen2 import (
 )
 from vllm.config import VllmConfig
 from vllm.forward_context import get_forward_context
+from vllm.inputs import MultiModalDataDict
 from vllm.model_executor.layers.linear import ColumnParallelLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader, maybe_remap_kv_scale_name
@@ -34,7 +35,6 @@ from vllm.model_executor.models.utils import (
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (
-    MultiModalDataDict,
     MultiModalFieldConfig,
     MultiModalKwargsItems,
 )
@@ -556,12 +556,14 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             config.hidden_size,
             bias=False,
             return_bias=False,
+            gather_output=True,
         )
         self.hidden_states_downcast = ColumnParallelLinear(
             config.hidden_size,
             self.local_config.hidden_size,
             bias=False,
             return_bias=False,
+            gather_output=True,
         )
 
         self.lm_head = ColumnParallelLinear(
@@ -569,6 +571,7 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             config.vocab_size,
             bias=False,
             return_bias=False,
+            gather_output=True,
         )
 
         # Re-encode the sum of multi-layer RVQ embeddings to obtain true Audio Code Embeddings
@@ -770,7 +773,6 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
         multimodal_embeddings: MultiModalEmbeddings | None = None,
         *,
         is_multimodal: torch.Tensor | None = None,
-        handle_oov_mm_token: bool = False,
     ) -> torch.Tensor:
         # This is to satisfy the type checker for each overload
         if multimodal_embeddings is None or is_multimodal is None:
@@ -780,7 +782,6 @@ class MiMoAudioLLMForConditionalGeneration(nn.Module, SupportsMultiModal, Suppor
             input_ids,
             multimodal_embeddings=multimodal_embeddings,
             is_multimodal=is_multimodal,
-            handle_oov_mm_token=handle_oov_mm_token,
         )
 
     def base_local_forward(

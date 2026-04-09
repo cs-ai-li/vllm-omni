@@ -40,8 +40,7 @@ GLM-Image uses a 2-stage pipeline:
 
 ```bash
 python end2end.py \
-    --model-path /path/to/glm-image \
-    --config-path ../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
+    --config-path ../../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
     --prompt "A beautiful sunset over the ocean with sailing boats" \
     --height 1024 \
     --width 1024 \
@@ -52,8 +51,7 @@ python end2end.py \
 
 ```bash
 python end2end.py \
-    --model-path /path/to/glm-image \
-    --config-path ../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
+    --config-path ../../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
     --prompt "Transform this scene into a winter wonderland" \
     --image input.png \
     --output output_i2i.png
@@ -64,7 +62,7 @@ python end2end.py \
 ```bash
 python end2end.py \
     --model-path /path/to/glm-image \
-    --config-path ../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
+    --config-path ../../../vllm_omni/model_executor/stage_configs/glm_image.yaml \
     --prompt "A photorealistic cat sitting on a window sill" \
     --height 1024 \
     --width 1024 \
@@ -131,8 +129,17 @@ The first run loads model weights. Subsequent runs are faster:
 --stage-init-timeout 900  # Increase timeout for slow storage
 ```
 
+### `Transformers does not recognize this architecture` Error
+
+Your have to upgrade `transformers` package to `5.3.0` or above:
+
+```
+pip install --upgrade transformers
+```
+
 ## Requirements
 
 - vLLM-Omni with GLM-Image support
 - CUDA-capable GPU (recommended: H100/A100 with 80GB)
 - GLM-Image model weights
+- `transformers` v5.3.0 or above

@@ -40,6 +40,7 @@ from vllm.config import CacheConfig, MultiModalConfig, VllmConfig
 from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.distributed import utils as dist_utils
+from vllm.inputs import MultiModalDataDict
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.attention.mm_encoder_attention import (
@@ -73,12 +74,15 @@ from vllm.model_executor.models.utils import (
 from vllm.model_executor.models.vision import get_vit_attn_backend
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (
-    MultiModalDataDict,
     MultiModalFeatureSpec,
     MultiModalFieldConfig,
     MultiModalKwargsItems,
 )
-from vllm.multimodal.parse import ImageProcessorItems, MultiModalDataItems
+from vllm.multimodal.parse import (
+    ImageProcessorItems,
+    MultiModalDataItems,
+    MultiModalDataParser,
+)
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
     BaseMultiModalProcessor,
@@ -113,6 +117,15 @@ class GlmImagePixelInputs(TensorSchema):
 
     pixel_values: Annotated[torch.Tensor, TensorShape("np", "cpp")]
     image_grid_thw: Annotated[torch.Tensor, TensorShape("ni", 3)]
+
+
+class GlmImageDataParser(MultiModalDataParser):
+    """GLM-Image treats ``img2img`` input identically to ``image``."""
+
+    def _get_subparsers(self):
+        parsers = super()._get_subparsers()
+        parsers["img2img"] = self._parse_image_data
+        return parsers
 
 
 class GlmImageProcessingInfo(BaseProcessingInfo):
@@ -162,14 +175,19 @@ class GlmImageProcessingInfo(BaseProcessingInfo):
             **kwargs,
         )
 
+    def get_data_parser(self) -> GlmImageDataParser:
+        return GlmImageDataParser(
+            expected_hidden_size=self._get_expected_hidden_size(),
+        )
+
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
         # GLM-Image is an image GENERATION model that supports:
         # - Text-to-image (t2i): no multimodal input needed
         # - Image-to-image (i2i): source images provided as input
         #
         # For i2i mode, we support up to 1 image as condition.
-        # The model architecture supports multiple images but typical usage is 1.
-        return {"image": 1}
+        # "img2img" is an alias used by the serving layer; parsed as "image".
+        return {"image": 1, "img2img": 1}
 
     def get_num_image_tokens(
         self,
