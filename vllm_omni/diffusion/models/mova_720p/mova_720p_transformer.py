@@ -289,10 +289,18 @@ class MovaTransformerBlock(nn.Module):
 
 
 class Mova720PTransformer2DModel(nn.Module):
+    # Optimized Sequence Parallel Plan for MOVA
     _sp_plan = {
-        "blocks.0": {
-            "hidden_states": SequenceParallelInput(split_dim=1, expected_dims=3),
+        # Shard RoPE output frequencies to match sharded hidden states in blocks
+        "rope": {
+            0: SequenceParallelInput(split_dim=1, expected_dims=4, split_output=True, auto_pad=True),
+            1: SequenceParallelInput(split_dim=1, expected_dims=4, split_output=True, auto_pad=True),
         },
+        # Shard hidden_states at the first transformer block input
+        "blocks.0": {
+            "hidden_states": SequenceParallelInput(split_dim=1, expected_dims=3, auto_pad=True),
+        },
+        # Gather outputs after the final projection layer
         "proj_out": SequenceParallelOutput(gather_dim=1, expected_dims=3),
     }
 
@@ -397,20 +405,24 @@ class Mova720PTransformer2DModel(nn.Module):
         Load weights from a pretrained model, handling the mapping from
         separate Q/K/V projections to fused QKV projections for self-attention.
         """
-        from vllm.distributed import get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size
+        from vllm.distributed import (
+            get_tensor_model_parallel_rank,
+            get_tensor_model_parallel_world_size,
+        )
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
 
         # Stacked params mapping for self-attention QKV fusion
+        # (fused_param_name, original_shard_name, shard_id)
         stacked_params_mapping = [
             (".attn.to_qkv", ".attn.to_q", "q"),
             (".attn.to_qkv", ".attn.to_k", "k"),
             (".attn.to_qkv", ".attn.to_v", "v"),
         ]
+        self.stacked_params_mapping = stacked_params_mapping
 
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
-        loader = AutoWeightsLoader(self)
 
         for name, loaded_weight in weights:
             original_name = name
@@ -423,29 +435,33 @@ class Mova720PTransformer2DModel(nn.Module):
                 lookup_name = original_name.replace(weight_name, param_name)
                 if lookup_name in params_dict:
                     param = params_dict[lookup_name]
+                    # QKVParallelLinear uses a custom weight_loader to handle sharding
                     weight_loader = param.weight_loader
                     weight_loader(param, loaded_weight, shard_id)
                     loaded_params.add(original_name)
                     break
             else:
-                # Handle weight name remapping for cross-attention and FFN
-                # diffusers: ffn.0 -> our: ffn.proj_1, diffusers: ffn.2 -> our: ffn.proj_2
+                # Handle weight name remapping for FFN
+                # MOVA original ffn uses sequential (ffn.0, ffn.2)
                 if ".ffn.0." in lookup_name:
                     lookup_name = lookup_name.replace(".ffn.0.", ".ffn.proj_1.")
                 elif ".ffn.2." in lookup_name:
                     lookup_name = lookup_name.replace(".ffn.2.", ".ffn.proj_2.")
-                
+
                 if lookup_name not in params_dict:
-                    logger.debug(f"Skipping weight {original_name} -> {lookup_name}")
                     continue
 
                 param = params_dict[lookup_name]
 
-                # Handle RMSNorm and other sharded weights that need manual TP slicing
-                # if not using a weight_loader that handles it automatically
+                # Manual TP slicing for RMSNorm (if not using ParallelLinear which handles it)
                 if tp_size > 1 and any(
                     norm_name in lookup_name
-                    for norm_name in [".norm_q.", ".norm_k.", ".attn.norm_q.", ".attn.norm_k."]
+                    for norm_name in [
+                        ".norm_q.",
+                        ".norm_k.",
+                        ".attn.norm_q.",
+                        ".attn.norm_k.",
+                    ]
                 ):
                     shard_size = loaded_weight.shape[0] // tp_size
                     loaded_weight = loaded_weight[tp_rank * shard_size : (tp_rank + 1) * shard_size]

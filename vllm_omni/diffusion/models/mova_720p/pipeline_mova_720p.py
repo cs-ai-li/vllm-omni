@@ -261,28 +261,20 @@ def get_mova_720p_post_process_func(
     """
     创建 MOVA 720p 模型的后处理函数。
     """
-    from diffusers.image_processor import VaeImageProcessor
+    from diffusers.video_processor import VideoProcessor
 
-    # 加载 VAE 配置以获取 scale factor
-    model_path = od_config.model
-    if not os.path.exists(model_path):
-        from vllm_omni.diffusion.model_loader.utils import download_weights_from_hf_specific
-        model_path = download_weights_from_hf_specific(model_path, None, ["*"])
+    # MOVA 720p is a video model, use VideoProcessor for post-processing
+    video_processor = VideoProcessor(vae_scale_factor=8)
 
-    vae_config_path = os.path.join(model_path, "vae/config.json")
-    with open(vae_config_path) as f:
-        vae_config = json.load(f)
-        vae_scale_factor = 2 ** (len(vae_config["block_out_channels"]) - 1)
-
-    # 创建图像处理器
-    image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor)
-
-    def post_process_func(images: torch.Tensor):
-        # 如果是视频 Tensor [B, C, F, H, W]，此处可能需要特殊处理
-        # 目前先处理单图或简单的序列
-        if images.ndim == 5:
-            # 取第一帧或压平 batch 处理
-            images = images[:, :, 0, :, :]
-        return image_processor.postprocess(images, output_type="pil")
+    def post_process_func(video: torch.Tensor, output_type: str = "pil"):
+        if output_type == "latent":
+            return video
+        
+        # postprocess_video returns list[list[PIL.Image]] for output_type="pil"
+        # and we flatten it to list[PIL.Image] for OmniRequestOutput.images
+        results = video_processor.postprocess_video(video, output_type=output_type)
+        if output_type == "pil" and isinstance(results, list) and len(results) > 0 and isinstance(results[0], list):
+            return [img for video_frames in results for img in video_frames]
+        return results
 
     return post_process_func
